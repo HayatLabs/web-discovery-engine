@@ -19,7 +19,7 @@ export class SearchOrchestrator {
         // 1 => searching for the query using the search adaptr
         const rawSearchResults = await this.searchAdapter.search(query, maxResults * 2);
 
-
+        console.log(`[Orchestrator] Raw search results fetched: ${rawSearchResults} results found.`);
 
 
 
