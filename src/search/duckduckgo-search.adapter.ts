@@ -1,44 +1,15 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { CookieJar } from 'tough-cookie';
-import { wrapper } from 'axios-cookiejar-support';
 
 import { ISearchAdapter } from './search-adapter.interface.js';
 import { SearchResult } from '../models/index.js';
 
 export class YahooSearchAdapter implements ISearchAdapter {
 
-  private jar = new CookieJar();
-
-  private client = wrapper(
-    axios.create({
-      jar: this.jar,
-      withCredentials: true,
-      maxRedirects: 10,
-      timeout: 15000,
-
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-          'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-          'Chrome/140.0.0.0 Safari/537.36',
-
-        'Accept':
-          'text/html,application/xhtml+xml,application/xml;q=0.9,' +
-          'image/avif,image/webp,image/apng,*/*;q=0.8',
-
-        'Accept-Language':
-          'en-US,en;q=0.9',
-
-        'Cache-Control': 'no-cache',
-
-        'Pragma': 'no-cache',
-
-        'Referer':
-          'https://search.yahoo.com/'
-      }
-    })
-  );
+  private readonly userAgent =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/140.0.0.0 Safari/537.36';
 
   async search(
     query: string,
@@ -54,30 +25,212 @@ export class YahooSearchAdapter implements ISearchAdapter {
 
     try {
 
-      const response = await this.client.get(searchUrl);
+   
+
+      const firstResponse = await axios.get(searchUrl, {
+        maxRedirects: 0,
+        timeout: 15000,
+
+        validateStatus: (status) =>
+          status >= 200 && status < 400,
+
+        headers: {
+          'User-Agent': this.userAgent,
+
+          'Accept':
+            'text/html,application/xhtml+xml,application/xml;q=0.9,' +
+            'image/avif,image/webp,image/apng,*/*;q=0.8',
+
+          'Accept-Language':
+            'en-US,en;q=0.9',
+
+          'Cache-Control':
+            'no-cache',
+
+          'Pragma':
+            'no-cache',
+
+          'Referer':
+            'https://search.yahoo.com/'
+        }
+      });
 
       console.log(
-        `[Yahoo] HTTP ${response.status} ${response.statusText}`
+        `[Yahoo] First response: ${firstResponse.status} ${firstResponse.statusText}`
       );
 
-      if (response.status !== 200) {
-        console.error(
-          `[Yahoo] Unexpected HTTP status: ${response.status}`
+
+      const setCookie =
+        firstResponse.headers['set-cookie'];
+
+      let ybvCookie: string | null = null;
+
+      if (setCookie) {
+
+        const cookieHeader = Array.isArray(setCookie)
+          ? setCookie
+          : [setCookie];
+
+        const ybv = cookieHeader.find(
+          cookie => cookie.startsWith('YBV=')
         );
 
-        return [];
+        if (ybv) {
+
+          ybvCookie =
+            ybv.split(';')[0];
+
+          console.log(
+            '[Yahoo] YBV cookie received.'
+          );
+        }
       }
 
-      const html = response.data;
+  
 
-      if (!html || typeof html !== 'string') {
-        console.error('[Yahoo] Empty HTML response.');
+      let html: string | null = null;
+
+      const location =
+        firstResponse.headers.location;
+
+      if (
+        firstResponse.status >= 300 &&
+        firstResponse.status < 400 &&
+        location
+      ) {
+
+        console.log(
+          `[Yahoo] Redirect received: ${location}`
+        );
+
+        const redirectUrl =
+          new URL(
+            location,
+            'https://search.yahoo.com'
+          ).toString();
+
+        const secondResponse =
+          await axios.get(redirectUrl, {
+
+            maxRedirects: 10,
+
+            timeout: 15000,
+
+            headers: {
+              'User-Agent': this.userAgent,
+
+              'Accept':
+                'text/html,application/xhtml+xml,application/xml;q=0.9,' +
+                'image/avif,image/webp,image/apng,*/*;q=0.8',
+
+              'Accept-Language':
+                'en-US,en;q=0.9',
+
+              'Referer':
+                searchUrl,
+
+              ...(ybvCookie
+                ? {
+                    'Cookie': ybvCookie
+                  }
+                : {})
+            }
+          });
+
+        console.log(
+          `[Yahoo] Redirect response: ${secondResponse.status} ${secondResponse.statusText}`
+        );
+
+
+
+        if (
+          secondResponse.status === 200 &&
+          typeof secondResponse.data === 'string'
+        ) {
+
+          const secondHtml =
+            secondResponse.data;
+
+          /*
+           * Sometimes the redirect endpoint itself
+           * returns the search page.
+           */
+          if (
+            secondHtml.includes('search.yahoo.com') ||
+            secondHtml.includes('<html') ||
+            secondHtml.includes('<HTML')
+          ) {
+
+            html = secondHtml;
+          }
+        }
+      }
+      // 5. If redirect flow didn't return HTML,
+      // request original search URL again with YBV
+
+      if (!html) {
+
+        console.log(
+          '[Yahoo] Requesting search page with YBV cookie...'
+        );
+
+        const finalResponse =
+          await axios.get(searchUrl, {
+
+            maxRedirects: 10,
+
+            timeout: 15000,
+
+            headers: {
+              'User-Agent': this.userAgent,
+
+              'Accept':
+                'text/html,application/xhtml+xml,application/xml;q=0.9,' +
+                'image/avif,image/webp,image/apng,*/*;q=0.8',
+
+              'Accept-Language':
+                'en-US,en;q=0.9',
+
+              'Referer':
+                'https://search.yahoo.com/',
+
+              ...(ybvCookie
+                ? {
+                    'Cookie': ybvCookie
+                  }
+                : {})
+            }
+          });
+
+        console.log(
+          `[Yahoo] Final response: ${finalResponse.status} ${finalResponse.statusText}`
+        );
+
+        if (
+          finalResponse.status === 200 &&
+          typeof finalResponse.data === 'string'
+        ) {
+
+          html = finalResponse.data;
+        }
+      }
+
+      // 6. No HTML
+
+      if (!html) {
+
+        console.error(
+          '[Yahoo] No search HTML received.'
+        );
+
         return [];
       }
 
       console.log(
         `[Yahoo] Received ${html.length} bytes of HTML`
       );
+
+      // 7. Parse HTML
 
       const $ = cheerio.load(html);
 
@@ -87,31 +240,33 @@ export class YahooSearchAdapter implements ISearchAdapter {
 
       const results: SearchResult[] = [];
 
-      /*
-       * Yahoo organic results
-       */
+      // 8. Primary Yahoo result parser
+
       $('div.dd.algo').each((_, element) => {
 
         if (results.length >= limit) {
           return;
         }
 
-        const link = $(element)
-          .find('h3 a')
-          .first();
+        const link =
+          $(element)
+            .find('h3 a')
+            .first();
 
-        const title = link
-          .text()
-          .trim();
+        const title =
+          link
+            .text()
+            .trim();
 
-        const href = link
-          .attr('href') || '';
+        const href =
+          link.attr('href') || '';
 
         if (!title || !href) {
           return;
         }
 
-        const cleanUrl = this.extractRealUrl(href);
+        const cleanUrl =
+          this.extractRealUrl(href);
 
         if (!cleanUrl) {
           return;
@@ -119,12 +274,13 @@ export class YahooSearchAdapter implements ISearchAdapter {
 
         try {
 
-          const parsed = new URL(cleanUrl);
+          const parsed =
+            new URL(cleanUrl);
 
           const hostname =
             parsed.hostname.toLowerCase();
 
-       
+          // Ignore Yahoo/Bing internal links
           if (
             hostname.includes('yahoo.com') ||
             hostname.includes('bing.com')
@@ -142,7 +298,8 @@ export class YahooSearchAdapter implements ISearchAdapter {
 
           if (
             results.some(
-              result => result.url === parsed.href
+              result =>
+                result.url === parsed.href
             )
           ) {
             return;
@@ -155,10 +312,12 @@ export class YahooSearchAdapter implements ISearchAdapter {
           });
 
         } catch {
+         
         }
       });
 
-     
+      // 9. Fallback parser
+
       if (results.length === 0) {
 
         console.log(
@@ -220,7 +379,8 @@ export class YahooSearchAdapter implements ISearchAdapter {
 
             if (
               results.some(
-                result => result.url === parsed.href
+                result =>
+                  result.url === parsed.href
               )
             ) {
               return;
@@ -233,10 +393,12 @@ export class YahooSearchAdapter implements ISearchAdapter {
             });
 
           } catch {
-           
+            // Ignore invalid URLs
           }
         });
       }
+
+      // 10. Final result
 
       console.log(
         `[Yahoo] Processed ${results.length} organic web results.`
@@ -256,7 +418,6 @@ export class YahooSearchAdapter implements ISearchAdapter {
         console.error(
           `[Yahoo] HTTP ${error.response.status}`
         );
-
       }
 
       return [];
@@ -270,6 +431,7 @@ export class YahooSearchAdapter implements ISearchAdapter {
     try {
 
     
+
       if (href.includes('/RU=')) {
 
         const encoded =
@@ -283,7 +445,7 @@ export class YahooSearchAdapter implements ISearchAdapter {
         }
       }
 
- 
+      // Normal URL
       if (
         href.startsWith('http://') ||
         href.startsWith('https://')
@@ -291,8 +453,9 @@ export class YahooSearchAdapter implements ISearchAdapter {
         return href;
       }
 
-     
+      // Protocol-relative URL
       if (href.startsWith('//')) {
+
         return `https:${href}`;
       }
 
